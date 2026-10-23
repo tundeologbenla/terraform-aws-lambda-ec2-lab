@@ -130,8 +130,8 @@ resource "aws_cloudwatch_event_rule" "schedule" {
   name                = "${var.project_name}-schedule-${random_id.suffix.hex}"
   description         = "Triggers the Terraform lab Lambda every five minutes"
   schedule_expression = "rate(5 minutes)"
-  state = "DISABLED"
-  
+  state               = "DISABLED"
+
 }
 
 resource "aws_cloudwatch_event_target" "lambda" {
@@ -195,10 +195,14 @@ resource "aws_security_group" "ec2" {
 }
 
 resource "aws_instance" "lab" {
-  ami                         = data.aws_ssm_parameter.amazon_linux_2023.value
+  ami                         = var.ec2_ami_id
   instance_type               = var.ec2_instance_type
   subnet_id                   = data.aws_subnets.default.ids[0]
   associate_public_ip_address = true
+
+  lifecycle {
+    ignore_changes = [associate_public_ip_address]
+  }
 
   vpc_security_group_ids = [
     aws_security_group.ec2.id
