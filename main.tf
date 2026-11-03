@@ -103,11 +103,20 @@ resource "aws_iam_role_policy_attachment" "lambda_logs" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+resource "aws_iam_role_policy_attachment" "lambda_xray" {
+  role       = aws_iam_role.lambda.name
+  policy_arn = "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"
+}
+
 resource "aws_lambda_function" "scheduled" {
   function_name = "${var.project_name}-scheduled-${random_id.suffix.hex}"
   role          = aws_iam_role.lambda.arn
   runtime       = "python3.12"
   handler       = "handler.lambda_handler"
+
+  tracing_config {
+    mode = "Active"
+  }
 
   s3_bucket = aws_s3_bucket.lambda_artifacts.id
   s3_key    = aws_s3_object.lambda_package.key
@@ -115,7 +124,8 @@ resource "aws_lambda_function" "scheduled" {
   source_code_hash = data.archive_file.lambda_package.output_base64sha256
 
   depends_on = [
-    aws_iam_role_policy_attachment.lambda_logs
+    aws_iam_role_policy_attachment.lambda_logs,
+    aws_iam_role_policy_attachment.lambda_xray
   ]
 
   tags = {
@@ -181,9 +191,10 @@ resource "aws_security_group" "ec2" {
   vpc_id      = data.aws_vpc.default.id
 
   egress {
-    from_port = 0
-    to_port   = 0
-    protocol  = "-1"
+    description = "Allow outbound traffic required for SSM and instance operations"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"
     ]
   }
@@ -198,11 +209,8 @@ resource "aws_instance" "lab" {
   ami                         = var.ec2_ami_id
   instance_type               = var.ec2_instance_type
   subnet_id                   = data.aws_subnets.default.ids[0]
-  associate_public_ip_address = true
-
-  lifecycle {
-    ignore_changes = [associate_public_ip_address]
-  }
+  associate_public_ip_address = false
+  monitoring                  = false
 
   vpc_security_group_ids = [
     aws_security_group.ec2.id
