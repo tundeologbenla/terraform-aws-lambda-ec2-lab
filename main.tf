@@ -59,6 +59,39 @@ resource "aws_s3_bucket" "lambda_artifacts" {
   }
 }
 
+# Enable versioning for the Lambda artifact bucket.
+resource "aws_s3_bucket_versioning" "lambda_artifacts" {
+  bucket = aws_s3_bucket.lambda_artifacts.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+# Manage old Lambda deployment package versions.
+resource "aws_s3_bucket_lifecycle_configuration" "lambda_artifacts" {
+  bucket = aws_s3_bucket.lambda_artifacts.id
+
+  rule {
+    id     = "cleanup-old-lambda-artifacts"
+    status = "Enabled"
+
+    filter {}
+
+    noncurrent_version_expiration {
+      noncurrent_days = 30
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+
+  depends_on = [
+    aws_s3_bucket_versioning.lambda_artifacts
+  ]
+}
+
 resource "aws_s3_bucket_public_access_block" "lambda_artifacts" {
   bucket = aws_s3_bucket.lambda_artifacts.id
 
@@ -79,6 +112,18 @@ resource "aws_s3_object" "lambda_package" {
   key    = "releases/lambda.zip"
   source = data.archive_file.lambda_package.output_path
   etag   = data.archive_file.lambda_package.output_md5
+}
+
+# SQS dead-letter queue for failed Lambda invocations.
+resource "aws_sqs_queue" "lambda_dlq" {
+  name                      = "${var.project_name}-lambda-dlq-${random_id.suffix.hex}"
+  message_retention_seconds = 345600 # 4 days
+  sqs_managed_sse_enabled   = true
+
+  tags = {
+    Project   = var.project_name
+    ManagedBy = "Terraform"
+  }
 }
 
 # Lambda execution role.
@@ -114,8 +159,14 @@ resource "aws_lambda_function" "scheduled" {
   runtime       = "python3.12"
   handler       = "handler.lambda_handler"
 
+  reserved_concurrent_executions = 1
+
   tracing_config {
     mode = "Active"
+  }
+
+  dead_letter_config {
+    target_arn = aws_sqs_queue.lambda_dlq.arn
   }
 
   s3_bucket = aws_s3_bucket.lambda_artifacts.id
@@ -178,6 +229,24 @@ resource "aws_iam_role" "ec2" {
 resource "aws_iam_role_policy_attachment" "ec2_ssm" {
   role       = aws_iam_role.ec2.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_iam_role_policy" "lambda_dlq" {
+  name = "${var.project_name}-lambda-dlq-policy-${random_id.suffix.hex}"
+  role = aws_iam_role.lambda.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "sqs:SendMessage"
+        ]
+        Resource = aws_sqs_queue.lambda_dlq.arn
+      }
+    ]
+  })
 }
 
 resource "aws_iam_instance_profile" "ec2" {
